@@ -1,7 +1,6 @@
 from django.urls import path
 
 from .views import (
-    LegacyReviewPRView,
     ReviewRunCancelView,
     ReviewRunChangesView,
     ReviewRunCollectionView,
@@ -11,7 +10,6 @@ from .views import (
 )
 
 urlpatterns = [
-    path("review/", LegacyReviewPRView.as_view(), name="review-pr"),
     path("v1/review-runs/", ReviewRunCollectionView.as_view(), name="review-run-collection"),
     path("v1/review-runs/<uuid:run_id>/", ReviewRunDetailView.as_view(), name="review-run-detail"),
     path("v1/review-runs/<uuid:run_id>/retry/", ReviewRunRetryView.as_view(), name="review-run-retry"),

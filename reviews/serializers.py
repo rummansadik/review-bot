@@ -1,6 +1,6 @@
 from rest_framework import serializers
 
-from .models import ReviewRun
+from .models import ReviewRun, ReviewRunComment, ReviewRunFile
 
 
 class ReviewCommentInputSerializer(serializers.Serializer):
@@ -57,16 +57,43 @@ class ReviewRunDetailSerializer(serializers.ModelSerializer):
         ]
 
 
+class ReviewRunCommentRecordSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = ReviewRunComment
+        fields = [
+            "path",
+            "line",
+            "side",
+            "body",
+            "position",
+        ]
+
+
 class ReviewRunCommentsSerializer(serializers.Serializer):
     run_id = serializers.UUIDField()
-    input_comments = ReviewCommentInputSerializer(many=True)
+    input_comments = ReviewRunCommentRecordSerializer(many=True)
     comments_posted = serializers.IntegerField()
     fallback_used = serializers.BooleanField()
     fallback_comment_body = serializers.CharField(allow_blank=True)
+
+
+class ReviewRunFileSnapshotSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = ReviewRunFile
+        fields = [
+            "filename",
+            "status",
+            "additions",
+            "deletions",
+            "changes",
+            "previous_filename",
+            "patch",
+            "position",
+        ]
 
 
 class ReviewRunChangesSerializer(serializers.Serializer):
     run_id = serializers.UUIDField()
     head_sha = serializers.CharField(allow_blank=True)
     count = serializers.IntegerField()
-    results = serializers.ListField(child=serializers.DictField())
+    results = ReviewRunFileSnapshotSerializer(many=True)

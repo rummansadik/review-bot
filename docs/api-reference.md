@@ -87,7 +87,3 @@ Return reviewed PR file snapshots captured during execution.
 Query params:
 - `limit` (default `100`, max `500`)
 - `offset` (default `0`)
-
-## Legacy endpoint
-
-`POST /api/review/` remains available for backward compatibility.

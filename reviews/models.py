@@ -47,8 +47,6 @@ class ReviewRun(UUIDPrimaryKeyModel):
     pull_request = models.ForeignKey(PullRequest, on_delete=models.CASCADE)
     head_sha = models.CharField(max_length=40, blank=True)
     status = models.CharField(max_length=20, choices=Status.choices, default=Status.QUEUED, db_index=True)
-    input_comments = models.JSONField(default=list, blank=True)
-    reviewed_files = models.JSONField(default=list, blank=True)
     comments_posted = models.PositiveIntegerField(default=0)
     fallback_used = models.BooleanField(default=False)
     fallback_comment_body = models.TextField(blank=True)
@@ -74,3 +72,48 @@ class ReviewRun(UUIDPrimaryKeyModel):
 
     def __str__(self) -> str:
         return f"{self.pull_request} - {self.status}"
+
+
+class ReviewRunComment(UUIDPrimaryKeyModel):
+    class Side(models.TextChoices):
+        RIGHT = "RIGHT", "Right"
+        LEFT = "LEFT", "Left"
+
+    run = models.ForeignKey(ReviewRun, on_delete=models.CASCADE, related_name="requested_comments")
+    path = models.CharField(max_length=500)
+    line = models.PositiveIntegerField()
+    side = models.CharField(max_length=5, choices=Side.choices, default=Side.RIGHT)
+    body = models.TextField()
+    position = models.PositiveIntegerField(default=0)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["position", "created_at"]
+        indexes = [
+            models.Index(fields=["run", "position"]),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.run_id} {self.path}:{self.line}"
+
+
+class ReviewRunFile(UUIDPrimaryKeyModel):
+    run = models.ForeignKey(ReviewRun, on_delete=models.CASCADE, related_name="reviewed_file_snapshots")
+    filename = models.CharField(max_length=500)
+    status = models.CharField(max_length=32, blank=True)
+    additions = models.PositiveIntegerField(default=0)
+    deletions = models.PositiveIntegerField(default=0)
+    changes = models.PositiveIntegerField(default=0)
+    previous_filename = models.CharField(max_length=500, blank=True)
+    patch = models.TextField(blank=True)
+    position = models.PositiveIntegerField(default=0)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["position", "created_at"]
+        indexes = [
+            models.Index(fields=["run", "position"]),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.run_id} {self.filename}"

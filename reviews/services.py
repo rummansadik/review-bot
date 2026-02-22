@@ -9,7 +9,7 @@ from django.utils import timezone
 
 from .github_auth import get_installation_token, normalize_private_key
 from .github_client import GitHubAPIError, GitHubClient
-from .models import PullRequest, Repository, ReviewRun
+from .models import PullRequest, Repository, ReviewRun, ReviewRunFile
 
 MAX_PATCH_CHARS = 4000
 
@@ -62,6 +62,7 @@ def execute_review_run(
 ) -> ReviewRun:
     if run.status == ReviewRun.Status.CANCELED:
         return run
+    comments_payload = _normalize_comments(comments)
 
     run.status = ReviewRun.Status.RUNNING
     run.error = ""
@@ -72,7 +73,6 @@ def execute_review_run(
     run.fallback_used = False
     run.fallback_comment_body = ""
     run.comments_posted = 0
-    run.reviewed_files = []
     run.save(
         update_fields=[
             "status",
@@ -84,7 +84,6 @@ def execute_review_run(
             "fallback_used",
             "fallback_comment_body",
             "comments_posted",
-            "reviewed_files",
         ]
     )
 
@@ -102,7 +101,7 @@ def execute_review_run(
 
         files = client.list_pull_files(owner=owner, repo=repo, pr_number=pr_number)
         run.head_sha = head_sha
-        run.reviewed_files = _serialize_files(files)
+        _replace_reviewed_files(run=run, files=files)
 
         if pr.get("state") != "open":
             return _finish_run(
@@ -130,17 +129,17 @@ def execute_review_run(
             owner=owner,
             repo=repo,
             pr_number=pr_number,
-            comments=comments,
+            comments=comments_payload,
         )
 
         fallback_used = False
         fallback_body = ""
-        comments_posted = len(comments)
+        comments_posted = len(comments_payload)
 
         if review_response.status_code == 422:
             fallback_used = True
             comments_posted = 0
-            fallback_body = _build_fallback_body(comments)
+            fallback_body = _build_fallback_body(comments_payload)
             client.create_issue_comment(
                 owner=owner,
                 repo=repo,
@@ -163,7 +162,6 @@ def execute_review_run(
             run.save(
                 update_fields=[
                     "head_sha",
-                    "reviewed_files",
                     "status",
                     "error",
                     "error_code",
@@ -192,7 +190,6 @@ def _finish_run(*, run: ReviewRun, status: str, error: str) -> ReviewRun:
     run.save(
         update_fields=[
             "head_sha",
-            "reviewed_files",
             "status",
             "error",
             "error_code",
@@ -203,24 +200,40 @@ def _finish_run(*, run: ReviewRun, status: str, error: str) -> ReviewRun:
     return run
 
 
-def _serialize_files(files: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    serialized = []
-    for item in files:
+def _replace_reviewed_files(*, run: ReviewRun, files: list[dict[str, Any]]) -> None:
+    run.reviewed_file_snapshots.all().delete()
+    snapshots = []
+    for index, item in enumerate(files):
         patch = item.get("patch")
         if isinstance(patch, str) and len(patch) > MAX_PATCH_CHARS:
             patch = patch[:MAX_PATCH_CHARS]
-        serialized.append(
-            {
-                "filename": item.get("filename"),
-                "status": item.get("status"),
-                "additions": item.get("additions"),
-                "deletions": item.get("deletions"),
-                "changes": item.get("changes"),
-                "previous_filename": item.get("previous_filename"),
-                "patch": patch,
-            }
+        snapshots.append(
+            ReviewRunFile(
+                run=run,
+                filename=str(item.get("filename") or ""),
+                status=str(item.get("status") or ""),
+                additions=int(item.get("additions") or 0),
+                deletions=int(item.get("deletions") or 0),
+                changes=int(item.get("changes") or 0),
+                previous_filename=str(item.get("previous_filename") or ""),
+                patch=patch or "",
+                position=index,
+            )
         )
-    return serialized
+    if snapshots:
+        ReviewRunFile.objects.bulk_create(snapshots, batch_size=200)
+
+
+def _normalize_comments(comments: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [
+        {
+            "path": str(comment["path"]),
+            "line": int(comment["line"]),
+            "body": str(comment["body"]),
+            "side": str(comment.get("side") or "RIGHT"),
+        }
+        for comment in comments
+    ]
 
 
 def _build_fallback_body(comments: list[dict[str, Any]]) -> str:

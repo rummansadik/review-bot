@@ -9,7 +9,7 @@ from rest_framework import status
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from .models import ReviewRun
+from .models import ReviewRun, ReviewRunComment
 from .serializers import (
     ReviewRunChangesSerializer,
     ReviewRunCommentsSerializer,
@@ -98,9 +98,9 @@ class ReviewRunCollectionView(APIView):
             run = ReviewRun.objects.create(
                 pull_request=pull_request,
                 status=ReviewRun.Status.QUEUED,
-                input_comments=comments,
                 idempotency_key=idempotency_key,
             )
+            _create_run_comments(run, comments)
         except IntegrityError:
             # Safe retry for concurrent requests with same idempotency key.
             if not idempotency_key:
@@ -137,8 +137,8 @@ class ReviewRunRetryView(APIView):
         serializer = ReviewRunRetrySerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         force = serializer.validated_data["force"]
-
-        if not run.input_comments:
+        source_comments = _get_run_comments(run)
+        if not source_comments:
             return Response(
                 {"status": ReviewRun.Status.FAILED, "error": "no input comments available for retry"},
                 status=status.HTTP_400_BAD_REQUEST,
@@ -147,14 +147,14 @@ class ReviewRunRetryView(APIView):
         retry_run = ReviewRun.objects.create(
             pull_request=run.pull_request,
             status=ReviewRun.Status.QUEUED,
-            input_comments=run.input_comments,
         )
+        _create_run_comments(retry_run, source_comments)
         retry_run = execute_review_run(
             run=retry_run,
             owner=run.pull_request.repository.owner,
             repo=run.pull_request.repository.name,
             pr_number=run.pull_request.number,
-            comments=run.input_comments,
+            comments=source_comments,
             force=force,
         )
         return Response(ReviewRunDetailSerializer(retry_run).data, status=status.HTTP_201_CREATED)
@@ -179,9 +179,10 @@ class ReviewRunCancelView(APIView):
 class ReviewRunCommentsView(APIView):
     def get(self, request, run_id, *args, **kwargs):
         run = _get_run(run_id)
+        input_comments = _get_run_comments(run)
         payload = {
             "run_id": run.id,
-            "input_comments": run.input_comments,
+            "input_comments": input_comments,
             "comments_posted": run.comments_posted,
             "fallback_used": run.fallback_used,
             "fallback_comment_body": run.fallback_comment_body,
@@ -194,54 +195,30 @@ class ReviewRunChangesView(APIView):
     def get(self, request, run_id, *args, **kwargs):
         run = _get_run(run_id)
         validated = _validate_offset_limit(request.query_params)
-        files = run.reviewed_files or []
         offset = validated["offset"]
         limit = validated["limit"]
+        files_queryset = run.reviewed_file_snapshots.order_by("position", "created_at")
+        count = files_queryset.count()
+        files = list(
+            files_queryset[offset : offset + limit].values(
+                "filename",
+                "status",
+                "additions",
+                "deletions",
+                "changes",
+                "previous_filename",
+                "patch",
+                "position",
+            )
+        )
         payload = {
             "run_id": run.id,
             "head_sha": run.head_sha,
-            "count": len(files),
-            "results": files[offset : offset + limit],
+            "count": count,
+            "results": files,
         }
         serializer = ReviewRunChangesSerializer(payload)
         return Response(serializer.data, status=status.HTTP_200_OK)
-
-
-class LegacyReviewPRView(APIView):
-    """
-    Backward-compatible endpoint. Prefer /api/v1/review-runs/.
-    """
-
-    def post(self, request, *args, **kwargs):
-        serializer = ReviewRunCreateSerializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
-        payload = serializer.validated_data
-
-        try:
-            validate_github_config()
-        except GithubConfigError as exc:
-            return Response(
-                {"status": "error", "error": exc.message},
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            )
-
-        run = ReviewRun.objects.create(
-            pull_request=get_or_create_pull_request(
-                owner=payload["owner"],
-                repo=payload["repo"],
-                pr_number=payload["pr_number"],
-            ),
-            status=ReviewRun.Status.QUEUED,
-            input_comments=payload["comments"],
-        )
-        run = execute_review_run(
-            run=run,
-            owner=payload["owner"],
-            repo=payload["repo"],
-            pr_number=payload["pr_number"],
-            comments=payload["comments"],
-        )
-        return _legacy_response(run)
 
 
 def _get_run(run_id) -> ReviewRun:
@@ -251,37 +228,32 @@ def _get_run(run_id) -> ReviewRun:
     )
 
 
-def _legacy_response(run: ReviewRun) -> Response:
-    if run.status == ReviewRun.Status.SUCCESS:
-        payload: dict[str, Any] = {
-            "status": "success",
-            "reviewed_sha": run.head_sha,
-            "comments_posted": run.comments_posted,
-        }
-        if run.fallback_used:
-            payload["fallback"] = True
-        return Response(payload, status=status.HTTP_200_OK)
-
-    if run.status == ReviewRun.Status.SKIPPED:
-        return Response(
-            {"status": "skipped", "reason": run.error or "skipped"},
-            status=status.HTTP_200_OK,
+def _create_run_comments(run: ReviewRun, comments: list[dict[str, Any]]) -> None:
+    items = []
+    for index, comment in enumerate(comments):
+        items.append(
+            ReviewRunComment(
+                run=run,
+                path=str(comment["path"]),
+                line=int(comment["line"]),
+                side=str(comment.get("side") or ReviewRunComment.Side.RIGHT),
+                body=str(comment["body"]),
+                position=index,
+            )
         )
+    if items:
+        ReviewRunComment.objects.bulk_create(items, batch_size=200)
 
-    if run.upstream_status_code in {401, 403}:
-        status_code = status.HTTP_401_UNAUTHORIZED
-    elif run.upstream_status_code == 404:
-        status_code = status.HTTP_404_NOT_FOUND
-    elif run.upstream_status_code == 422:
-        status_code = status.HTTP_400_BAD_REQUEST
-    elif run.upstream_status_code:
-        status_code = status.HTTP_502_BAD_GATEWAY
-    else:
-        status_code = status.HTTP_500_INTERNAL_SERVER_ERROR
 
-    return Response(
-        {"status": "error", "error": run.error or "unexpected error"},
-        status=status_code,
+def _get_run_comments(run: ReviewRun) -> list[dict[str, Any]]:
+    return list(
+        run.requested_comments.order_by("position", "created_at").values(
+            "path",
+            "line",
+            "side",
+            "body",
+            "position",
+        )
     )
 
 
