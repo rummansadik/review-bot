@@ -20,4 +20,4 @@ review-bot is a minimal Django + DRF service that posts GitHub PR review comment
 `PullRequest.last_reviewed_sha` is used to avoid duplicate reviews for the same commit.
 
 ## Persistence
-All review attempts are stored in `runs_reviewrun` with status and error details.
+All review attempts are stored in `reviews_reviewrun` with status and error details.
