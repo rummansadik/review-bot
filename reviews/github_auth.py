@@ -26,7 +26,8 @@ def _build_jwt(app_id: int, private_key: str) -> str:
     payload = {
         "iat": now - 60,
         "exp": now + 9 * 60,
-        "iss": app_id,
+        # PyJWT expects iss as string for GitHub App JWT.
+        "iss": str(app_id),
     }
     return jwt.encode(payload, private_key, algorithm="RS256")
 
