@@ -1,23 +1,30 @@
 # review-bot architecture
 
 ## Overview
-review-bot is a minimal Django + DRF service that posts GitHub PR review comments via a GitHub App. It is intentionally local-only and manually triggered.
+review-bot is a Django + DRF service that posts GitHub PR review comments via a GitHub App.
 
-## Core flow
-1. `POST /api/review/` with owner/repo/pr_number and prepared comments.
-2. Authenticate as GitHub App (JWT) and exchange for an installation token.
-3. Fetch PR metadata to read the head SHA and basic state.
-4. Skip if already reviewed that SHA, or if PR is closed/draft.
-5. Fetch PR files for validation/debug visibility.
-6. Post a single review with inline comments.
-7. If inline comments fail (HTTP 422), fall back to a PR-level issue comment.
-8. Persist the run and last reviewed SHA in SQLite.
+## API design
+- Command endpoint: `POST /api/v1/review-runs/`
+- Query endpoints:
+  - `GET /api/v1/review-runs/`
+  - `GET /api/v1/review-runs/{run_id}/`
+  - `GET /api/v1/review-runs/{run_id}/comments/`
+  - `GET /api/v1/review-runs/{run_id}/changes/`
+- Control endpoints:
+  - `POST /api/v1/review-runs/{run_id}/retry/`
+  - `POST /api/v1/review-runs/{run_id}/cancel/`
+- Legacy compatibility endpoint: `POST /api/review/`
 
 ## Module
 - `reviews`: DRF endpoint, SQLite models, and GitHub App integration.
 
-## Idempotency
-`PullRequest.last_reviewed_sha` is used to avoid duplicate reviews for the same commit.
+## Lifecycle
+- `queued` -> `running` -> `success | skipped | failed`
+- `canceled` can be set before terminal completion.
+
+## Idempotency and dedupe
+- `PullRequest.last_reviewed_sha` avoids duplicate reviews for the same commit by default.
+- Optional `idempotency_key` is supported on create requests and deduped per pull request.
 
 ## Persistence
-All review attempts are stored in `reviews_reviewrun` with status and error details.
+All review attempts are stored in `reviews_reviewrun` with status, timestamps, upstream error metadata, requested comments, and reviewed file snapshots.

@@ -1,6 +1,7 @@
 import uuid
 
 from django.db import models
+from django.db.models import Q
 
 
 class UUIDPrimaryKeyModel(models.Model):
@@ -36,15 +37,40 @@ class PullRequest(UUIDPrimaryKeyModel):
 
 class ReviewRun(UUIDPrimaryKeyModel):
     class Status(models.TextChoices):
+        QUEUED = "queued", "Queued"
+        RUNNING = "running", "Running"
         SUCCESS = "success", "Success"
         SKIPPED = "skipped", "Skipped"
-        ERROR = "error", "Error"
+        FAILED = "failed", "Failed"
+        CANCELED = "canceled", "Canceled"
 
     pull_request = models.ForeignKey(PullRequest, on_delete=models.CASCADE)
     head_sha = models.CharField(max_length=40, blank=True)
-    status = models.CharField(max_length=20, choices=Status.choices)
+    status = models.CharField(max_length=20, choices=Status.choices, default=Status.QUEUED, db_index=True)
+    input_comments = models.JSONField(default=list, blank=True)
+    reviewed_files = models.JSONField(default=list, blank=True)
+    comments_posted = models.PositiveIntegerField(default=0)
+    fallback_used = models.BooleanField(default=False)
+    fallback_comment_body = models.TextField(blank=True)
     error = models.TextField(null=True, blank=True)
+    error_code = models.CharField(max_length=64, blank=True)
+    upstream_status_code = models.PositiveSmallIntegerField(null=True, blank=True)
+    idempotency_key = models.CharField(max_length=128, null=True, blank=True)
+    started_at = models.DateTimeField(null=True, blank=True)
+    finished_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["pull_request", "idempotency_key"],
+                condition=Q(idempotency_key__isnull=False),
+                name="uniq_reviewrun_idempotency_per_pr",
+            )
+        ]
+        indexes = [
+            models.Index(fields=["created_at"]),
+        ]
 
     def __str__(self) -> str:
         return f"{self.pull_request} - {self.status}"
